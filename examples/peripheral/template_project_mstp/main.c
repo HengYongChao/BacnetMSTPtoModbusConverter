@@ -34,6 +34,7 @@
 #include "rs485.h"
 #include "led.h"
 #include "user_bacnet.h"
+#include "SEGGER_RTT.h"
 
 /* local version override */
 char *BACnet_Version = "1.0";
@@ -48,9 +49,10 @@ int main(void)
     //uint32_t err_code;
 	struct itimer Blink_Timer;
 	
+	SEGGER_RTT_ConfigUpBuffer(0, NULL, NULL, 0, SEGGER_RTT_MODE_BLOCK_IF_FIFO_FULL);
+	
     timer_init();
     led_init();
-    rs485_init();
     bacnet_init();
     timer_interval_start(&Blink_Timer, 125);	
 
@@ -62,7 +64,8 @@ int main(void)
             led_ld3_toggle();
         }
         led_task();
-        bacnet_task();					
+        bacnet_task();	
+		
     }
 
 }

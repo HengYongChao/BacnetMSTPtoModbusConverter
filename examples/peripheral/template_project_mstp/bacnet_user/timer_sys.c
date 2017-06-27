@@ -30,16 +30,22 @@
 #include "hardware.h"
 #include "timer.h"
 #include "debug.h"
+#include "nrf_gpio.h"
+#include "nrf_drv_rtc.h"
+#include "nrf_drv_clock.h"
 #include "app_timer.h"
+#include "app_simple_timer.h"
 
-#define TIMER_DEBUG_PIN				13
-#define MILLISECOND_INTERVAL		1
-#define APP_TIMER_PRESCALER        	(0)                                 /**< Value of the RTC1 PRESCALER register. */
-#define APP_TIMER_MAX_TIMERS       	(16 + BSP_APP_TIMERS_NUMBER)      	/**< Maximum number of simultaneously created timers. */
-#define APP_TIMER_OP_QUEUE_SIZE    	(4) 
+#define TIMER_DEBUG_PIN			  6	//13
+
+#define APP_TIMER_PRESCALER       0                                 /**< Value of the RTC1 PRESCALER register. */
+#define APP_TIMER_OP_QUEUE_SIZE   4                                 /**< Size of timer operation queues. */
+#define MILLISECOND_INTERVAL      APP_TIMER_TICKS(100, APP_TIMER_PRESCALER)  /**< One millisecond interval (ticks). */
+
+
 /* counter for the various timers */
 static volatile uint32_t Millisecond_Counter;
-
+const nrf_drv_rtc_t rtc = NRF_DRV_RTC_INSTANCE(0); /**< Declaring an instance of nrf_drv_rtc for RTC0. */
 
 /*************************************************************************
 * Description: Activate the LED
@@ -89,13 +95,13 @@ void timer_debug_toggle(
 * Returns: nothing
 * Notes: reserved name for ISR handlers
 *************************************************************************/
-//void SysTick_Handler(
-//    void)
-//{
-//    /* increment the tick count */
-//    Millisecond_Counter++;
-//    timer_debug_toggle();
-//}
+void TIMER1_IRQHandler(
+    void)
+{
+    /* increment the tick count */
+    Millisecond_Counter++;
+    timer_debug_toggle();
+}
 
 /*************************************************************************
 * Description: returns the current millisecond count
@@ -112,12 +118,52 @@ uint32_t timer_milliseconds(
 * Returns: nothing
 * Notes: reserved name for ISR handlers
 *************************************************************************/
-static void Millisecond_Handler(void * p_context)
+//static void Millisecond_Handler(void * p_context)
+//{
+//    (void)p_context;
+//	/* increment the tick count */
+//    Millisecond_Counter++;
+//    timer_debug_toggle();	
+//}
+/** @brief: Function for handling the RTC0 interrupts.
+ * Triggered on TICK and COMPARE0 match.
+ */
+static void rtc_handler(nrf_drv_rtc_int_type_t int_type)
 {
-    (void)p_context;
-	/* increment the tick count */
-    Millisecond_Counter++;
-    timer_debug_toggle();	
+	if (int_type == NRF_DRV_RTC_INT_TICK)
+    {
+		/* increment the tick count */
+		Millisecond_Counter++;
+		//timer_debug_toggle();
+		nrf_gpio_pin_toggle(TIMER_DEBUG_PIN);		
+    }
+}
+/** @brief Function starting the internal LFCLK XTAL oscillator.
+ */
+static void lfclk_config(void)
+{
+    ret_code_t err_code = nrf_drv_clock_init();
+    APP_ERROR_CHECK(err_code);
+
+    nrf_drv_clock_lfclk_request(NULL);
+}
+/** @brief Function initialization and configuration of RTC driver instance.
+ */
+static void rtc_config(void)
+{
+    uint32_t err_code;
+
+    //Initialize RTC instance
+    nrf_drv_rtc_config_t config = NRF_DRV_RTC_DEFAULT_CONFIG;
+    config.prescaler = 15;//4095
+    err_code = nrf_drv_rtc_init(&rtc, &config, rtc_handler);
+    APP_ERROR_CHECK(err_code);
+
+    //Enable tick event & interrupt
+    nrf_drv_rtc_tick_enable(&rtc,true);
+
+    //Power on RTC instance
+    nrf_drv_rtc_enable(&rtc);
 }
 /*************************************************************************
 * Description: Timer setup for 1 millisecond timer
@@ -127,17 +173,11 @@ static void Millisecond_Handler(void * p_context)
 void timer_init(
     void)
 {
-	uint32_t err_code;
-
-	nrf_gpio_cfg_output(TIMER_DEBUG_PIN);
-		
-	APP_TIMER_INIT(APP_TIMER_PRESCALER, APP_TIMER_OP_QUEUE_SIZE, NULL);
+	//uint32_t err_code;	
 	
-    APP_TIMER_DEF(m_Millisecond_Timer_id);
-	err_code = app_timer_create(&m_Millisecond_Timer_id, APP_TIMER_MODE_REPEATED, Millisecond_Handler);
-	APP_ERROR_CHECK(err_code);
-		
-	err_code = app_timer_start(m_Millisecond_Timer_id, MILLISECOND_INTERVAL, NULL);	/* Millisecond Start! */
-	APP_ERROR_CHECK(err_code);	
+	nrf_gpio_cfg_output(TIMER_DEBUG_PIN);	
 
+    lfclk_config();
+    rtc_config();
+				
 }

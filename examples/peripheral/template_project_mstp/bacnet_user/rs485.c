@@ -27,6 +27,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include "hardware.h"
 #include "timer.h"
 #include "bits.h"
@@ -37,6 +38,8 @@
 #include "app_uart.h"
 #include "app_fifo.h"
 #include "app_error.h"
+#include "nrf_drv_uart.h"
+#include "nrf_delay.h"
 
 /* buffer for storing received bytes - size must be power of two */
 static uint8_t Receive_Buffer_Data[512];
@@ -57,14 +60,16 @@ static uint32_t Baud_Rate = 38400;
 /* 40 bits is 4 octets including a start and stop bit with each octet */
 #define 	Tturnaround  		(40UL)
 #define		RS485_EN	 		(2UL)
-#define 	RX_PIN_MODBUS		(1UL)
-#define 	TX_PIN_MODBUS		(0UL)
-#define 	RTS_PIN_NUMBER		(NULL)
-#define 	CTS_PIN_NUMBER		(NULL)
-#define 	UART_TX_BUF_SIZE 	5                         /**< UART TX buffer size. */
-#define 	UART_RX_BUF_SIZE 	5  
+#define 	BOARD_UART0_RX		(0UL)
+#define 	BOARD_UART0_TX		(1UL)
+#define 	RTS_PIN_NUMBER		(15)
+#define 	CTS_PIN_NUMBER		(16)
+#define 	UART_TX_BUF_SIZE 	128  /**< UART TX buffer size. */
+#define 	UART_RX_BUF_SIZE 	128  /*2,power of two*/
 
 bool volatile rs485_frame_sent_flag = false;
+extern nrf_drv_uart_t app_uart_inst;
+void uart_putchar(uint8_t ch);
 /*************************************************************************
 * Description: Reset the silence on the wire timer.
 * Returns: nothing
@@ -127,22 +132,22 @@ bool rs485_receive_error(
 {
     return false;
 }
-#if 0
+#if 1
 /*********************************************************************//**
  * @brief        USARTx interrupt handler sub-routine
  * @param[in]    None
- * @return         None
+ * @return       None
  **********************************************************************/
-void USART2_IRQHandler(
+void UART0_IRQHandler(							/* APP_UART_DATA_READY */
     void)
 {
     uint8_t data_byte;
-
-    if (USART_GetITStatus(USART2, USART_IT_RXNE) != RESET) {
-        /* Read one byte from the receive data register */
-        data_byte = USART_ReceiveData(USART2);
+	
+    if (NRF_UART0->EVENTS_RXDRDY){
+		/* Read one byte from the receive data register */
+		data_byte = NRF_UART0->RXD;
         (void) FIFO_Put(&Receive_Buffer, data_byte);
-    }
+	}			
 }
 #endif
 
@@ -170,7 +175,8 @@ bool rs485_byte_available(
 /* ----------------------- Start implementation -----------------------------*/
 void uart_error_handle(app_uart_evt_t * p_event)
 {
-    if (p_event->evt_type == APP_UART_COMMUNICATION_ERROR)
+//   uint8_t data_byte;
+	if (p_event->evt_type == APP_UART_COMMUNICATION_ERROR)
     {
         APP_ERROR_HANDLER(p_event->data.error_communication);
     }
@@ -178,19 +184,7 @@ void uart_error_handle(app_uart_evt_t * p_event)
     {
         APP_ERROR_HANDLER(p_event->data.error_code);
     }
-	
-	if(p_event->evt_type == APP_UART_TX_EMPTY)	
-	{
-		rs485_frame_sent_flag = true;
-	}else
-	{
-		rs485_frame_sent_flag = false;
-	}
-//	if(p_event->evt_type == APP_UART_DATA_READY)
-//	{
-//        data_byte = USART_ReceiveData(USART2);
-//        (void) FIFO_Put(&Receive_Buffer, data_byte);		
-//	}
+
 }
 /*************************************************************************
 * DESCRIPTION: Sends a byte of data
@@ -201,8 +195,8 @@ void rs485_byte_send(
     uint8_t tx_byte)
 {
     led_tx_on_interval(10);
-    //USART_SendData(USART2, tx_byte);
-	app_uart_put(tx_byte);	
+    //USART_SendData(USART2, NRF_UART0);
+	uart_putchar(tx_byte);
     timer_elapsed_start(&Silence_Timer);
 }
 
@@ -215,8 +209,9 @@ void rs485_byte_send(
 bool rs485_byte_sent(
     void)
 {
-    return nrf_uart_event_check(NRF_UART0, NRF_UART_EVENT_TXDRDY);	
-	//return USART_GetFlagStatus(USART2, USART_FLAG_TXE);
+    //return nrf_uart_event_check(NRF_UART0, NRF_UART_EVENT_TXDRDY);		/* NRF_DRV_UART_EVT_TX_DONE */
+	return (bool)NRF_UART0->EVENTS_TXDRDY;
+	
 }
 
 /*************************************************************************
@@ -227,8 +222,9 @@ bool rs485_byte_sent(
 bool rs485_frame_sent(
     void)
 {
-    return rs485_frame_sent_flag;	
-	//return USART_GetFlagStatus(USART2, USART_FLAG_TC);
+    //return rs485_frame_sent_flag;										/* APP_UART_TX_EMPTY */
+	return (bool)NRF_UART0->TASKS_STOPTX;
+
 }
 
 /*************************************************************************
@@ -247,7 +243,7 @@ void rs485_bytes_send(
         tx_byte = *buffer;
         /* Send one byte */
         //USART_SendData(USART2, tx_byte);
-		app_uart_put(tx_byte);	
+		uart_putchar(tx_byte);	
         while (!rs485_byte_sent()) {
             /* do nothing - wait until Tx buffer is empty */
         }
@@ -275,22 +271,28 @@ bool rs485_baud_rate_set(
     bool valid = true;
     switch (baud) {
         case 9600:
-			nrf_uart_baudrate_set(NRF_UART0, NRF_UART_BAUDRATE_9600);
+			//nrf_uart_baudrate_set(NRF_UART0, NRF_UART_BAUDRATE_9600);
+			NRF_UART0->BAUDRATE = NRF_UART_BAUDRATE_9600;
 		    break;
         case 19200:
-			nrf_uart_baudrate_set(NRF_UART0, NRF_UART_BAUDRATE_19200);
+			///nrf_uart_baudrate_set(NRF_UART0, NRF_UART_BAUDRATE_19200);
+			NRF_UART0->BAUDRATE = NRF_UART_BAUDRATE_19200;
 			break;
         case 38400:
-			nrf_uart_baudrate_set(NRF_UART0, NRF_UART_BAUDRATE_38400);
+			//nrf_uart_baudrate_set(NRF_UART0, NRF_UART_BAUDRATE_38400);
+			NRF_UART0->BAUDRATE = NRF_UART_BAUDRATE_38400;
 			break;
         case 57600:
-			nrf_uart_baudrate_set(NRF_UART0, NRF_UART_BAUDRATE_57600);
+			//nrf_uart_baudrate_set(NRF_UART0, NRF_UART_BAUDRATE_57600);
+			NRF_UART0->BAUDRATE = NRF_UART_BAUDRATE_57600;
 			break;
         case 76800:
-			nrf_uart_baudrate_set(NRF_UART0, NRF_UART_BAUDRATE_76800);
+			//nrf_uart_baudrate_set(NRF_UART0, NRF_UART_BAUDRATE_76800);
+			NRF_UART0->BAUDRATE = NRF_UART_BAUDRATE_76800;
 			break;
         case 115200:
-			nrf_uart_baudrate_set(NRF_UART0, NRF_UART_BAUDRATE_115200);
+			//nrf_uart_baudrate_set(NRF_UART0, NRF_UART_BAUDRATE_115200);
+			NRF_UART0->BAUDRATE = NRF_UART_BAUDRATE_115200;
             break;
         default:
             valid = false;
@@ -326,44 +328,62 @@ void rs485_rts_enable(
 		nrf_gpio_pin_clear(RS485_EN);
     }
 }
+/***************************************************************************/
+// Must be called once initially
+void uart_init(void)
+{
+  NRF_UART0->ENABLE = UART_ENABLE_ENABLE_Enabled;
 
+  NRF_UART0->PSELRTS = RTS_PIN_NUMBER;
+  NRF_UART0->PSELTXD = BOARD_UART0_TX;
+  NRF_UART0->PSELCTS = CTS_PIN_NUMBER;
+  NRF_UART0->PSELRXD = BOARD_UART0_RX;
+
+  NRF_UART0->BAUDRATE         = NRF_UART_BAUDRATE_38400; 		/* baudrate */
+  NRF_UART0->CONFIG           = NRF_UART_HWFC_DISABLED;
+  NRF_UART0->EVENTS_RXDRDY    = 0;
+  NRF_UART0->TASKS_STARTTX    = 1;
+  NRF_UART0->TASKS_STARTRX    = 1;
+}	
+// Send a single byte
+void uart_putchar(uint8_t ch)
+{
+  NRF_UART0->EVENTS_TXDRDY = 0;
+  NRF_UART0->TXD = ch;
+  while(NRF_UART0->EVENTS_TXDRDY != 1){}  // Wait for TXD data to be sent
+  NRF_UART0->EVENTS_TXDRDY = 0;
+}
 /*************************************************************************
 * Description: Initialize the room network USART
 * Returns: nothing
 * Notes: none
 **************************************************************************/
+//uint32_t err_code = NRF_SUCCESS;
 void rs485_init(
     void)
 {
-    uint32_t err_code;
-    const app_uart_comm_params_t comm_params =
-      {
-          TX_PIN_MODBUS,
-          RX_PIN_MODBUS,
-          RTS_PIN_NUMBER,
-          CTS_PIN_NUMBER,
-          APP_UART_FLOW_CONTROL_DISABLED,
-          false,
-          UART_BAUDRATE_BAUDRATE_Baud115200
-      };
-
-    APP_UART_FIFO_INIT(&comm_params,
-                         UART_RX_BUF_SIZE,
-                         UART_TX_BUF_SIZE,
-                         uart_error_handle,
-                         APP_IRQ_PRIORITY_LOW,
-                         err_code);
-	printf(" uart init ok.\n\r");
-    APP_ERROR_CHECK(err_code);
-		
-    /* enable the USART to generate interrupts */
-    //USART_ITConfig(USART2, USART_IT_RXNE, ENABLE);
-	//nrf_uart_int_enable(NRF_UART0, NRF_UART_INT_MASK_RXDRDY );
-	
-    rs485_baud_rate_set(Baud_Rate);
-
-    //USART_Cmd(USART2, ENABLE);
-
+//    uint32_t err_code;
+//    const app_uart_comm_params_t comm_params =
+//      {
+//          0,
+//          1,
+//          RTS_PIN_NUMBER,
+//          CTS_PIN_NUMBER,
+//          APP_UART_FLOW_CONTROL_DISABLED,
+//          false,
+//          UART_BAUDRATE_BAUDRATE_Baud115200
+//      };
+//    APP_UART_FIFO_INIT(&comm_params,
+//                         UART_RX_BUF_SIZE,
+//                         UART_TX_BUF_SIZE,
+//                         uart_error_handle,
+//                         APP_IRQ_PRIORITY_LOW,
+//                         err_code);
+//	printf(" uart init ok.\n\r");	
+//	nrf_delay_ms(200);  
+//    APP_ERROR_CHECK(err_code);		
+	uart_init();
+	uart_putchar('x');
     FIFO_Init(&Receive_Buffer, &Receive_Buffer_Data[0],
         (unsigned) sizeof(Receive_Buffer_Data));
     timer_elapsed_start(&Silence_Timer);
